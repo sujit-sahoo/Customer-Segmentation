@@ -1,0 +1,423 @@
+---
+title: "Mith52_Sujit"
+author: "Sujit"
+date: "5 January 2019"
+output: html_document
+---
+
+```{r}
+rm(list=ls(all=T))
+```
+
+##Load libraries
+
+```{r}
+library(tidyr)
+library(data.table)
+library(lubridate)
+library(eeptools)
+library(dplyr)
+```
+
+##Read the train files and analyse it
+
+```{r}
+demographics = read.csv("Train_Demographics.csv",header=TRUE,sep=",")
+transactions = read.csv("Train_Transactions.csv",header=TRUE,sep=",")
+customer = read.csv("Train.csv",header=TRUE,sep=",")
+head(transactions)
+```
+
+```{r}
+demographics = demographics[order(demographics$CustomerId),]
+transactions = transactions[order(transactions$CustomerId),]
+customer = customer[order(customer$CustomerId),]
+```
+
+```{r}
+nrow(transactions)
+sum(is.na(transactions))
+sum(is.na(demographics))
+sum(is.na(customer))
+```
+```{r}
+str(transactions)
+str(demographics)
+str(customer)
+#transactions$CustomerId = as.character(transactions$CustomerId)
+#demographics$CustomerId = as.character(demographics$CustomerId)
+#customer$CustomerId = as.character(customer$CustomerId)
+```
+
+##Feature engineering
+
+```{r}
+transactions$amount <- transactions$Quantity*transactions$UnitPrice
+
+head(transactions)
+```
+
+```{r}
+tran_amount = transactions %>% 
+  group_by(CustomerId) %>% 
+  summarise(noVisits = n(),total_am = sum(amount)) 
+
+tail(tran_amount)
+nrow(tran_amount)
+```
+
+```{r}
+tran_a = transactions %>% 
+  group_by(CustomerId,BillNumber) %>% 
+  summarise(total_am = sum(amount))
+
+tran_a %>% 
+  group_by(CustomerId) %>% 
+  summarise(noVisits = n(),total_amt = sum(total_am))
+```
+
+
+## merge the data sets
+
+```{r}
+merge_demo_tran = merge(demographics,tran_amount,by.x="CustomerId",by.y = "CustomerId")
+head(merge_demo_tran)
+merged_customer = merge(merge_demo_tran,customer,by.x="CustomerId",by.y = "CustomerId")
+head(merged_customer)
+nrow(merged_customer)
+```
+
+```{r}
+str(merged_customer)
+```
+
+
+```{r}
+sum(is.na(merged_customer))
+```
+
+
+```{r}
+merged_customer$Familysize = as.numeric(merged_customer$Familysize)
+merged_customer$noVisits = as.numeric(merged_customer$noVisits)
+merged_customer$DOB = as.Date(merged_customer$DOB)
+merged_customer$age=floor(age_calc(merged_customer$DOB, units = "years"))
+
+str(merged_customer)
+head(merged_customer)
+```
+
+## drop customer id and DOB columns
+```{r}
+drop_cols <- c("CustomerId","DOB")
+merged_customer[ ,drop_cols] <- list(NULL)
+
+str(merged_customer)
+```
+
+
+```{r}
+cat_cols = c("gender","MaritalStatus","CustomerValue")
+num_cols = setdiff(colnames(merged_customer),cat_cols)
+cat_cols
+num_cols
+```
+
+## Create data analysis report
+
+```{r}
+#install.packages("DataExplorer")
+library(DataExplorer)
+create_report(merged_customer)
+```
+
+```{r}
+plot(merged_customer$noVisits,merged_customer$CustomerValue,xlab="No of Visits",ylab="Value of customer",main="CustomerValue vs NoOfVisits", col= "blue")
+
+plot(merged_customer$total_am,merged_customer$CustomerValue,xlab="Total Spend",ylab="Value of customer",main="TotalSpend vs NoOfVisits", col= "blue")
+```
+
+```{r}
+library(ggplot2)
+ggplot(data = merged_customer, aes(x = CustomerValue)) + geom_bar(fill = 'blue')
+```
+
+
+```{r}
+ggplot(data = merged_customer, aes(x = age, fill = CustomerValue)) + geom_histogram()
+```
+
+```{r}
+ggplot(data = merged_customer, aes(x = total_am, fill = CustomerValue)) + geom_histogram()
+```
+
+```{r}
+ggplot(data = merged_customer, aes(x = noVisits, fill = CustomerValue)) + geom_histogram()
+```
+
+
+```{r}
+ggplot(data = merged_customer, aes(x = Familysize, fill = CustomerValue)) + geom_histogram()
+```
+
+
+```{r}
+ggplot(data = merged_customer, aes(x = gender, fill = CustomerValue)) +
+  geom_bar()
+```
+
+```{r}
+ggplot(data = merged_customer, aes(x = MaritalStatus, fill = CustomerValue)) +
+  geom_bar() 
+```
+
+
+
+## draw coorelation plot
+
+```{r fig.height= 4, fig.width = 5}
+library(corrplot)
+
+corrplot(cor(merged_customer[,num_cols], use = "complete.obs"))
+```
+
+## split train and test on the merged dataset
+
+```{r}
+
+library(caret)
+
+set.seed(007)
+
+trainIndex <- createDataPartition(merged_customer$CustomerValue, p = .7, list = F)
+
+train_data <- merged_customer[trainIndex, ]
+
+validate_data <- merged_customer[-trainIndex, ]
+```
+
+
+##build Decision tree and analyse the performance
+```{r}
+library(C50)
+c5_tree <- C5.0(CustomerValue ~ . , train_data)
+```
+
+```{r}
+C5imp(c5_tree, metric = "usage")
+```
+
+```{r}
+summary(c5_tree)
+```
+
+```{r, fig.width= 35, fig.height=15}
+
+plot(c5_tree)
+```
+
+```{r}
+preds <- predict(c5_tree, validate_data)
+```
+
+```{r}
+library(caret)
+
+confusionMatrix(preds, validate_data$CustomerValue)
+```
+
+```{r}
+preds=as.vector(preds)
+table(preds)
+```
+
+
+## Build multinomial regression and verify accuracy
+```{r}
+library(nnet)
+multi_class = multinom(CustomerValue ~ ., train_data)
+multi_preds = predict(multi_class , validate_data ,type = "class")
+confusionMatrix(multi_preds, validate_data$CustomerValue)
+```
+
+```{r}
+multi_preds=as.vector(multi_preds)
+table(multi_preds)
+```
+
+##Build a Random Forest model and verify accuracy
+```{r}
+library(randomForest)
+RFModel = randomForest(CustomerValue ~ ., data = train_data, keep.forest = TRUE, ntree=200)
+print(RFModel)
+```
+
+```{r}
+RFModel$importance
+round(importance(RFModel),2)
+varImpPlot(RFModel)
+```
+
+```{r}
+preds_rf <- predict(RFModel, validate_data)
+confusionMatrix(preds_rf, validate_data$CustomerValue)
+```
+
+## dummify categorical variables for XGBoost model
+
+```{r}
+dummies <- dummyVars(~ gender +  MaritalStatus, merged_customer)
+df_all_ohe <- as.data.frame(predict(dummies, merged_customer))
+merged_customer <- cbind(merged_customer[,!(names(merged_customer) %in%
+                                           c('gender','MaritalStatus'))],df_all_ohe)
+str(merged_customer)
+
+```
+
+
+```{r}
+library(caret)
+
+set.seed(009)
+
+xg_trainIndex <- createDataPartition(merged_customer$CustomerValue, p = .7, list = F)
+
+xg_train_data <- merged_customer[xg_trainIndex, ]
+
+xg_validate_data <- merged_customer[-xg_trainIndex, ]
+
+CustomerValue <- recode(xg_train_data$CustomerValue,'High'=0, 'Medium'=1, 'Low'=2)
+
+validate_CustomerValue <- recode(xg_validate_data$CustomerValue,'High'=0, 'Medium'=1, 'Low'=2)
+
+xg_train_data$CustomerValue<-NULL
+xg_validate_data$CustomerValue<-NULL
+str(xg_validate_data)
+```
+
+## build XGBoost model
+```{r}
+library(xgboost)
+xgb <- xgboost(data = data.matrix(xg_train_data), 
+ label = CustomerValue, 
+ eta = 0.1,
+ max_depth = 15, 
+ nround=25, 
+ subsample = 0.5,
+ colsample_bytree = 0.5,
+ seed = 1,
+ eval_metric = "merror",
+ objective = "multi:softmax",
+ num_class = 3,
+ nthread = 3
+)
+```
+
+```{r}
+xgb$feature_names
+```
+
+## verify the accuracy
+```{r}
+xgb_pred <- predict(xgb, data.matrix(xg_validate_data))
+#xgb_pred <- recode(as.character(xgb_pred),'0'='High', '1'='Medium', '2'='Low')
+
+#xg_validate_data <- cbind(xg_validate_data,validate_CustomerValue)
+confusionMatrix(as.factor(xgb_pred), as.factor(validate_CustomerValue))
+```
+
+
+```{r}
+mat <- xgb.importance (feature_names = colnames(xg_train_data),model = xgb)
+xgb.plot.importance (importance_matrix = mat[1:8]) 
+```
+
+
+## run the same data analysis steps for test data
+```{r}
+test_demographics = read.csv("Test_Demographics.csv",header=TRUE,sep=",")
+test_transactions = read.csv("Test_Transactions.csv",header=TRUE,sep=",")
+test_customer = read.csv("Test.csv",header=TRUE,sep=",")
+test_demographics = test_demographics[order(test_demographics$CustomerId),]
+test_transactions = test_transactions[order(test_transactions$CustomerId),]
+test_customer = data.frame(test_customer[order(test_customer$CustomerId),])
+sum(is.na(test_demographics))
+sum(is.na(test_transactions))
+sum(is.na(test_customer))
+```
+
+```{r}
+test_transactions$amount <- test_transactions$Quantity*test_transactions$UnitPrice
+test_tran_amount = test_transactions %>% 
+  group_by(CustomerId) %>% 
+  summarise(noVisits = n(),total_am = sum(amount)) 
+test_merged_customer = merge(test_tran_amount,test_demographics,by.x="CustomerId",by.y =
+                               "CustomerId")
+test_merged_customer$Familysize = as.numeric(test_merged_customer$Familysize)
+test_merged_customer$noVisits = as.numeric(test_merged_customer$noVisits)
+test_merged_customer$DOB = as.Date(test_merged_customer$DOB)
+test_merged_customer$age=floor(age_calc(test_merged_customer$DOB, units = "years"))
+drop_cols <- c("CustomerId","DOB")
+test_merged_customer[ ,drop_cols] <- list(NULL)
+
+str(test_merged_customer)
+```
+
+```{r}
+test_df_all_ohe <- as.data.frame(predict(dummies, test_merged_customer))
+test_merged_customer <- cbind(test_merged_customer[,!(names(test_merged_customer) %in%
+                                           c('gender','MaritalStatus'))],test_df_all_ohe)
+str(test_merged_customer)
+```
+```{r}
+test_merged_customer <- test_merged_customer[c("Familysize","noVisits","total_am","age",
+                                             "gender.F","gender.M","MaritalStatus.No",
+                                             "MaritalStatus.Yes")]
+
+str(test_merged_customer)
+```
+
+
+## Get the test predictions for XGBoost model
+```{r}
+test_xgb_pred <- predict(xgb, data.matrix(test_merged_customer))
+test_xgb_pred
+test_xgb_pred <- recode(as.character(test_xgb_pred),'0'='High', '1'='Medium', '2'='Low')
+test_xgb_pred
+
+final_val = cbind(test_demographics , test_xgb_pred)
+final_val
+xgb_submission = data.frame('CustomerId'=final_val$CustomerId , 
+                           'CustomerValue' = final_val$test_xgb_pred)
+write.csv(xgb_submission , file = "submission.csv" ,row.names = FALSE)
+```
+
+
+## Get the test predictions for Random Forest model
+```{r}
+#test_preds_rf <- predict(RFModel, test_merged_customer)
+
+#final_val = cbind(test_demographics , test_preds_rf)
+#final_val
+#rf_submission = data.frame('CustomerId'=final_val$CustomerId , 
+#                           'CustomerValue' = final_val$test_preds_rf)
+#write.csv(rf_submission , file = "submission.csv" ,row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
